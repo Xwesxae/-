@@ -19,7 +19,6 @@ class LocalMessenger:
         self.start_server()
         
     def get_local_ip(self):
-        """Получает локальный IP адрес"""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -30,7 +29,6 @@ class LocalMessenger:
             return "127.0.0.1"
     
     def start_server(self):
-        """Запускает сервер для приема сообщений"""
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
@@ -42,33 +40,28 @@ class LocalMessenger:
             self.server_socket.bind((self.host, self.port))
             self.add_message(f"Сервер запущен на {self.host}:{self.port}", "system")
         
-        # Поток для приема сообщений
         receive_thread = threading.Thread(target=self.receive_messages)
         receive_thread.daemon = True
         receive_thread.start()
         
-        # Поток для поиска других пользователей
         discovery_thread = threading.Thread(target=self.discover_users)
         discovery_thread.daemon = True
         discovery_thread.start()
     
     def discover_users(self):
-        """Обнаружение других пользователей в сети"""
         discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         
-        # Отправка broadcast сообщения
         message = f"DISCOVERY:{self.host}"
         
         while True:
             try:
                 discovery_socket.sendto(message.encode('utf-8'), ('255.255.255.255', 12346))
-                threading.Event().wait(5)  # Ждем 5 секунд
+                threading.Event().wait(5)
             except:
                 pass
     
     def receive_messages(self):
-        """Прием сообщений от других пользователей"""
         while True:
             try:
                 data, addr = self.server_socket.recvfrom(1024)
@@ -78,54 +71,44 @@ class LocalMessenger:
                 self.add_message(f"Ошибка приема: {str(e)}", "error")
     
     def process_message(self, message, addr):
-        """Обработка входящих сообщений"""
         if message.startswith("DISCOVERY:"):
-            # Обнаружен новый пользователь
             user_ip = message.split(":")[1]
             if user_ip != self.host and user_ip not in self.clients:
                 self.clients[user_ip] = addr
                 self.update_users_list()
                 self.add_message(f"Обнаружен пользователь: {user_ip}", "system")
         elif message.startswith("PRIVATE:"):
-            # Личное сообщение
             parts = message.split(":", 2)
             if len(parts) == 3:
                 sender, recipient, content = parts
                 if recipient == self.host:
                     self.add_message(f"[Лично от {sender}] {content}", "private")
         elif message.startswith("GROUP:"):
-            # Групповое сообщение
             parts = message.split(":", 2)
             if len(parts) == 3:
                 group, sender, content = parts
                 self.add_message(f"[{group} от {sender}] {content}", "group")
         else:
-            # Обычное сообщение
             self.add_message(f"[{addr[0]}] {message}", "normal")
     
     def send_message(self, message=None):
-        """Отправка сообщения"""
         if message is None:
             message = self.message_entry.get()
             if not message.strip():
                 return
         
-        # Определяем тип сообщения
         current_tab = self.get_current_tab()
         
         if current_tab.startswith("Лично:"):
-            # Личное сообщение
             recipient = current_tab.split(":")[1]
             full_message = f"PRIVATE:{self.host}:{recipient}:{message}"
             self.send_to_user(recipient, full_message)
             self.add_message(f"[Я → {recipient}] {message}", "my_private")
         elif current_tab in self.groups:
-            # Групповое сообщение
             full_message = f"GROUP:{current_tab}:{self.host}:{message}"
             self.broadcast_to_group(current_tab, full_message)
             self.add_message(f"[{current_tab}] Я: {message}", "my_group")
         else:
-            # Общее сообщение всем
             self.broadcast_message(message)
             self.add_message(f"Я: {message}", "my_normal")
         
@@ -133,7 +116,6 @@ class LocalMessenger:
             self.message_entry.delete(0, tk.END)
     
     def send_to_user(self, user_ip, message):
-        """Отправка сообщения конкретному пользователю"""
         if user_ip in self.clients:
             try:
                 self.server_socket.sendto(message.encode('utf-8'), self.clients[user_ip])
@@ -141,7 +123,6 @@ class LocalMessenger:
                 self.add_message(f"Не удалось отправить сообщение {user_ip}", "error")
     
     def broadcast_message(self, message):
-        """Отправка сообщения всем пользователям"""
         for user_ip, addr in self.clients.items():
             try:
                 self.server_socket.sendto(message.encode('utf-8'), addr)
@@ -149,7 +130,6 @@ class LocalMessenger:
                 pass
     
     def broadcast_to_group(self, group_name, message):
-        """Отправка сообщения в группу"""
         if group_name in self.groups:
             for user_ip in self.groups[group_name]:
                 if user_ip in self.clients:
@@ -159,28 +139,22 @@ class LocalMessenger:
                         pass
     
     def setup_gui(self):
-        """Настройка графического интерфейса"""
         self.root = tk.Tk()
         self.root.title(f"Локальный мессенджер - {self.host}")
         self.root.geometry("700x600")
         
-        # Основной фрейм
         main_frame = tk.Frame(self.root)
         main_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Левая панель - чаты и сообщения
         left_frame = tk.Frame(main_frame)
         left_frame.pack(side='left', fill='both', expand=True)
         
-        # Вкладки чатов (реализованные через фреймы)
         self.chat_frames = {}
         self.current_chat = "Общий чат"
         
-        # Кнопки для переключения чатов
         chats_frame = tk.LabelFrame(left_frame, text="Чаты")
         chats_frame.pack(fill='x', pady=(0, 5))
         
-        # Кнопки основных чатов
         general_btn = tk.Button(chats_frame, text="Общий чат", 
                                command=lambda: self.switch_chat("Общий чат"))
         general_btn.pack(side='left', padx=2)
@@ -193,7 +167,6 @@ class LocalMessenger:
                              command=lambda: self.switch_chat("Разное"))
         other_btn.pack(side='left', padx=2)
         
-        # Область чата
         chat_frame = tk.LabelFrame(left_frame, text="Сообщения")
         chat_frame.pack(fill='both', expand=True)
         
@@ -206,7 +179,6 @@ class LocalMessenger:
         )
         self.chat_text.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Панель ввода сообщения
         input_frame = tk.Frame(left_frame)
         input_frame.pack(fill='x', pady=5)
         
@@ -217,18 +189,15 @@ class LocalMessenger:
         send_button = tk.Button(input_frame, text="Отправить", command=self.send_message)
         send_button.pack(side='right')
         
-        # Правая панель - пользователи и управление
         right_frame = tk.Frame(main_frame)
         right_frame.pack(side='right', fill='y', padx=(10, 0))
         
-        # Список пользователей
         users_frame = tk.LabelFrame(right_frame, text="Пользователи онлайн")
         users_frame.pack(fill='x', pady=(0, 10))
         
         self.users_listbox = tk.Listbox(users_frame, height=10, width=20)
         self.users_listbox.pack(fill='both', padx=5, pady=5)
         
-        # Кнопки для пользователей
         user_buttons_frame = tk.Frame(users_frame)
         user_buttons_frame.pack(fill='x', pady=5)
         
@@ -246,7 +215,6 @@ class LocalMessenger:
         )
         add_to_group_btn.pack(fill='x', pady=2)
         
-        # Личные чаты
         self.private_chats_frame = tk.LabelFrame(right_frame, text="Личные чаты")
         self.private_chats_frame.pack(fill='x')
         
@@ -254,7 +222,6 @@ class LocalMessenger:
         self.private_chats_listbox.pack(fill='both', padx=5, pady=5)
         self.private_chats_listbox.bind('<Double-Button-1>', lambda e: self.open_private_chat())
         
-        # Кнопки для личных чатов
         private_buttons_frame = tk.Frame(self.private_chats_frame)
         private_buttons_frame.pack(fill='x', pady=5)
         
@@ -272,23 +239,18 @@ class LocalMessenger:
         )
         remove_private_btn.pack(fill='x', pady=2)
         
-        # Обновление интерфейса
         self.root.after(1000, self.update_interface)
     
     def switch_chat(self, chat_name):
-        """Переключает активный чат"""
         self.current_chat = chat_name
         self.root.title(f"Локальный мессенджер - {self.host} - {chat_name}")
-        # В реальном приложении здесь бы обновлялось содержимое чата
     
     def start_private_chat(self):
-        """Начинает личный чат с выбранным пользователем"""
         selection = self.users_listbox.curselection()
         if selection:
             user_ip = self.users_listbox.get(selection[0])
             chat_name = f"Лично:{user_ip}"
             
-            # Добавляем в список личных чатов если его там нет
             if user_ip not in self.private_chats_listbox.get(0, tk.END):
                 self.private_chats_listbox.insert(tk.END, user_ip)
             
@@ -296,25 +258,21 @@ class LocalMessenger:
             self.add_message(f"Начат личный чат с {user_ip}", "system")
     
     def open_private_chat(self):
-        """Открывает выбранный личный чат"""
         selection = self.private_chats_listbox.curselection()
         if selection:
             user_ip = self.private_chats_listbox.get(selection[0])
             self.switch_chat(f"Лично:{user_ip}")
     
     def remove_private_chat(self):
-        """Удаляет личный чат из списка"""
         selection = self.private_chats_listbox.curselection()
         if selection:
             self.private_chats_listbox.delete(selection[0])
     
     def add_to_group(self):
-        """Добавляет пользователя в группу"""
         selection = self.users_listbox.curselection()
         if selection:
             user_ip = self.users_listbox.get(selection[0])
             
-            # Диалог выбора группы
             group_window = tk.Toplevel(self.root)
             group_window.title("Выберите группу")
             group_window.geometry("200x150")
@@ -338,10 +296,8 @@ class LocalMessenger:
             tk.Button(group_window, text="Добавить", command=confirm_add).pack(pady=5)
     
     def add_message(self, message, msg_type="normal"):
-        """Добавляет сообщение в чат"""
         self.chat_text.config(state='normal')
         
-        # Цвета для разных типов сообщений
         colors = {
             "system": "blue",
             "error": "red", 
@@ -355,7 +311,6 @@ class LocalMessenger:
         
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         
-        # Добавляем префикс в зависимости от типа чата
         if self.current_chat.startswith("Лично:"):
             prefix = "[Личный] "
         elif self.current_chat in self.groups:
@@ -367,7 +322,6 @@ class LocalMessenger:
         
         self.chat_text.insert(tk.END, formatted_message)
         
-        # Применяем цвет
         if msg_type in colors:
             start_index = f"{self.chat_text.index(tk.END)} - {len(formatted_message) + 1}c"
             end_index = self.chat_text.index(tk.END)
@@ -378,26 +332,21 @@ class LocalMessenger:
         self.chat_text.see(tk.END)
     
     def get_current_tab(self):
-        """Возвращает название текущего чата"""
         return self.current_chat
     
     def update_users_list(self):
-        """Обновляет список пользователей"""
         self.users_listbox.delete(0, tk.END)
         for user_ip in self.clients.keys():
             self.users_listbox.insert(tk.END, user_ip)
     
     def update_interface(self):
-        """Периодическое обновление интерфейса"""
         self.update_users_list()
         self.root.after(1000, self.update_interface)
     
     def run(self):
-        """Запускает приложение"""
         self.root.mainloop()
 
 if __name__ == "__main__":
-    # Запуск discovery сервера
     def start_discovery_server():
         discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -408,7 +357,6 @@ if __name__ == "__main__":
                 data, addr = discovery_socket.recvfrom(1024)
                 message = data.decode('utf-8')
                 if message.startswith("DISCOVERY:"):
-                    # Отвечаем на discovery запрос
                     response = f"DISCOVERY:{messenger.host}"
                     discovery_socket.sendto(response.encode('utf-8'), addr)
             except:
@@ -416,10 +364,8 @@ if __name__ == "__main__":
     
     messenger = LocalMessenger()
     
-    # Запуск discovery сервера в отдельном потоке
     discovery_thread = threading.Thread(target=start_discovery_server)
     discovery_thread.daemon = True
     discovery_thread.start()
-
     
     messenger.run()
