@@ -5,23 +5,20 @@ from tkinter import scrolledtext, messagebox
 import datetime
 import time
 
-class LocalMessenger:
+class SimpleMessenger:
     def __init__(self):
         self.host = self.get_local_ip()
-        self.port = 12345
-        self.broadcast_ip = "192.168.0.255"
+        self.port = 8888
         self.clients = {}
-        self.groups = {
-            "Общий чат": set(),
-            "Работа": set(),
-            "Разное": set()
-        }
+        self.running = True
+        
+        print(f"Ваш IP: {self.host}")
         
         self.setup_gui()
-        self.start_server()
-        
+        self.start_network()
+    
     def get_local_ip(self):
-        """Автоматическое определение IP"""
+        """Получаем локальный IP"""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -30,393 +27,285 @@ class LocalMessenger:
             return ip
         except:
             try:
-                hostname = socket.gethostname()
-                return socket.gethostbyname(hostname)
+                return socket.gethostbyname(socket.gethostname())
             except:
                 return "127.0.0.1"
     
-    def start_server(self):
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    def start_network(self):
+        """Запускаем сетевые компоненты"""
+        # UDP сервер для приема сообщений
+        self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         
         try:
-            self.server_socket.bind(('0.0.0.0', self.port))  # Слушаем на всех интерфейсах
-            self.add_message(f"✅ Сервер запущен на {self.host}:{self.port}", "system")
+            self.udp_socket.bind(('', self.port))
+            self.add_message(f"✅ Сервер запущен на порту {self.port}", "system")
         except Exception as e:
-            self.add_message(f"❌ Ошибка запуска: {str(e)}", "error")
+            self.add_message(f"❌ Ошибка: {e}", "error")
             return
         
-        receive_thread = threading.Thread(target=self.receive_messages)
-        receive_thread.daemon = True
-        receive_thread.start()
-        
-        discovery_thread = threading.Thread(target=self.discover_users)
-        discovery_thread.daemon = True
-        discovery_thread.start()
-        
-        # Дополнительный поток для сканирования подсети
-        scan_thread = threading.Thread(target=self.scan_subnet)
-        scan_thread.daemon = True
-        scan_thread.start()
+        # Запускаем потоки
+        threading.Thread(target=self.receive_messages, daemon=True).start()
+        threading.Thread(target=self.broadcast_presence, daemon=True).start()
+        threading.Thread(target=self.scan_network, daemon=True).start()
     
-    def discover_users(self):
-        """Broadcast обнаружение"""
-        discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        
-        message = f"DISCOVERY:{self.host}"
-        
-        while True:
+    def broadcast_presence(self):
+        """Регулярная отправка broadcast сообщений"""
+        while self.running:
             try:
-                # Broadcast по всем основным адресам
-                broadcast_addresses = [
-                    "192.168.0.255",
-                    "255.255.255.255",
-                    "<broadcast>"
-                ]
-                
-                for broadcast_addr in broadcast_addresses:
-                    try:
-                        discovery_socket.sendto(message.encode('utf-8'), (broadcast_addr, 12346))
-                    except:
-                        pass
-                
-                time.sleep(5)  # Поиск каждые 5 секунд
-                
+                message = f"HELLO:{self.host}"
+                self.udp_socket.sendto(message.encode('utf-8'), ('<broadcast>', self.port))
+                time.sleep(3)  # Отправляем каждые 3 секунды
             except Exception as e:
                 time.sleep(5)
     
-    def scan_subnet(self):
-        """Активное сканирование подсети 192.168.0.*"""
-        message = f"DISCOVERY:{self.host}"
+    def scan_network(self):
+        """Активное сканирование сети"""
+        base_ip = ".".join(self.host.split('.')[:-1]) + "."
         
-        while True:
+        while self.running:
             try:
-                # Сканируем диапазон 192.168.0.1 - 192.168.0.100
-                for i in range(1, 101):
-                    target_ip = f"192.168.0.{i}"
+                # Сканируем диапазон 1-254
+                for i in range(1, 255):
+                    if not self.running:
+                        break
+                    target_ip = f"{base_ip}{i}"
                     if target_ip != self.host:
                         try:
-                            temp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            temp_socket.settimeout(0.1)
-                            temp_socket.sendto(message.encode('utf-8'), (target_ip, 12346))
-                            temp_socket.close()
+                            message = f"PING:{self.host}"
+                            self.udp_socket.sendto(message.encode('utf-8'), (target_ip, self.port))
                         except:
                             pass
-                
                 time.sleep(10)  # Сканируем каждые 10 секунд
-                
-            except Exception as e:
+            except:
                 time.sleep(10)
     
     def receive_messages(self):
-        while True:
+        """Прием сообщений"""
+        while self.running:
             try:
-                data, addr = self.server_socket.recvfrom(1024)
+                data, addr = self.udp_socket.recvfrom(1024)
                 message = data.decode('utf-8')
-                self.process_message(message, addr)
-            except Exception as e:
+                self.handle_message(message, addr[0])
+            except:
                 pass
     
-    def process_message(self, message, addr):
-        if message.startswith("DISCOVERY:"):
+    def handle_message(self, message, ip):
+        """Обработка входящих сообщений"""
+        if message.startswith("HELLO:"):
             user_ip = message.split(":")[1]
             if user_ip != self.host and user_ip not in self.clients:
-                self.clients[user_ip] = addr
+                self.clients[user_ip] = ip
                 self.update_users_list()
-                self.add_message(f"✅ Обнаружен пользователь: {user_ip}", "system")
-                # Отправляем ответ
-                response = f"DISCOVERY:{self.host}"
-                self.server_socket.sendto(response.encode('utf-8'), (user_ip, 12346))
+                self.add_message(f"✅ Обнаружен: {user_ip}", "system")
+                # Отвечаем на приветствие
+                response = f"HELLO:{self.host}"
+                self.udp_socket.sendto(response.encode('utf-8'), (ip, self.port))
+        
+        elif message.startswith("PING:"):
+            user_ip = message.split(":")[1]
+            if user_ip != self.host:
+                # Отвечаем на ping
+                response = f"HELLO:{self.host}"
+                self.udp_socket.sendto(response.encode('utf-8'), (ip, self.port))
+        
+        elif message.startswith("MSG:"):
+            # Обычное сообщение
+            parts = message.split(":", 2)
+            if len(parts) == 3:
+                sender, content = parts[1], parts[2]
+                self.add_message(f"[{sender}] {content}", "normal")
+        
         elif message.startswith("PRIVATE:"):
-            parts = message.split(":", 2)
-            if len(parts) == 3:
-                sender, recipient, content = parts
-                if recipient == self.host:
+            # Личное сообщение
+            parts = message.split(":", 3)
+            if len(parts) == 4:
+                sender, target, content = parts[1], parts[2], parts[3]
+                if target == self.host:
                     self.add_message(f"[Лично от {sender}] {content}", "private")
-        elif message.startswith("GROUP:"):
-            parts = message.split(":", 2)
-            if len(parts) == 3:
-                group, sender, content = parts
-                self.add_message(f"[{group} от {sender}] {content}", "group")
-        else:
-            self.add_message(f"[{addr[0]}] {message}", "normal")
     
-    def send_message(self, message=None):
-        if message is None:
-            message = self.message_entry.get()
-            if not message.strip():
-                return
+    def send_message(self, event=None):
+        """Отправка сообщения"""
+        message = self.message_entry.get().strip()
+        if not message:
+            return
         
-        current_tab = self.get_current_tab()
-        
-        if current_tab.startswith("Лично:"):
-            recipient = current_tab.split(":")[1]
-            full_message = f"PRIVATE:{self.host}:{recipient}:{message}"
-            self.send_to_user(recipient, full_message)
-            self.add_message(f"[Я → {recipient}] {message}", "my_private")
-        elif current_tab in self.groups:
-            full_message = f"GROUP:{current_tab}:{self.host}:{message}"
-            self.broadcast_to_group(current_tab, full_message)
-            self.add_message(f"[{current_tab}] Я: {message}", "my_group")
-        else:
-            self.broadcast_message(message)
-            self.add_message(f"Я: {message}", "my_normal")
-        
-        if message is not None:
-            self.message_entry.delete(0, tk.END)
-    
-    def send_to_user(self, user_ip, message):
-        if user_ip in self.clients:
+        # Отправляем всем пользователям
+        for user_ip in self.clients:
             try:
-                self.server_socket.sendto(message.encode('utf-8'), self.clients[user_ip])
-            except:
-                self.add_message(f"❌ Не удалось отправить {user_ip}", "error")
-    
-    def broadcast_message(self, message):
-        for user_ip, addr in self.clients.items():
-            try:
-                self.server_socket.sendto(message.encode('utf-8'), addr)
+                msg = f"MSG:{self.host}:{message}"
+                self.udp_socket.sendto(msg.encode('utf-8'), (user_ip, self.port))
             except:
                 pass
+        
+        self.add_message(f"[Я] {message}", "my_message")
+        self.message_entry.delete(0, tk.END)
     
-    def broadcast_to_group(self, group_name, message):
-        if group_name in self.groups:
-            for user_ip in self.groups[group_name]:
-                if user_ip in self.clients:
-                    try:
-                        self.server_socket.sendto(message.encode('utf-8'), self.clients[user_ip])
-                    except:
-                        pass
+    def send_private_message(self):
+        """Отправка личного сообщения"""
+        selection = self.users_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Внимание", "Выберите пользователя из списка")
+            return
+        
+        target_ip = self.users_listbox.get(selection[0])
+        message = self.private_entry.get().strip()
+        if not message:
+            return
+        
+        try:
+            msg = f"PRIVATE:{self.host}:{target_ip}:{message}"
+            self.udp_socket.sendto(msg.encode('utf-8'), (target_ip, self.port))
+            self.add_message(f"[Я → {target_ip}] {message}", "my_private")
+            self.private_entry.delete(0, tk.END)
+        except Exception as e:
+            self.add_message(f"❌ Ошибка отправки: {e}", "error")
     
     def manual_connect(self):
         """Ручное подключение по IP"""
-        ip = self.manual_ip_entry.get()
-        if ip and ip != self.host:
-            if ip not in self.clients:
-                self.clients[ip] = (ip, 12345)
-                self.update_users_list()
-                self.add_message(f"✅ Ручное подключение: {ip}", "system")
-                # Отправляем discovery для подтверждения
-                message = f"DISCOVERY:{self.host}"
-                self.server_socket.sendto(message.encode('utf-8'), (ip, 12346))
-            self.manual_ip_entry.delete(0, tk.END)
+        ip = self.manual_ip_entry.get().strip()
+        if not ip:
+            return
+        
+        if ip == self.host:
+            messagebox.showwarning("Внимание", "Нельзя подключиться к себе")
+            return
+        
+        if ip not in self.clients:
+            self.clients[ip] = ip
+            self.update_users_list()
+            self.add_message(f"✅ Ручное подключение: {ip}", "system")
+            
+            # Отправляем приветствие
+            try:
+                message = f"HELLO:{self.host}"
+                self.udp_socket.sendto(message.encode('utf-8'), (ip, self.port))
+            except:
+                pass
+        
+        self.manual_ip_entry.delete(0, tk.END)
     
     def setup_gui(self):
+        """Настройка интерфейса"""
         self.root = tk.Tk()
-        self.root.title(f"📱 Мессенджер - {self.host}")
-        self.root.geometry("800x650")
+        self.root.title(f"Простой мессенджер - {self.host}")
+        self.root.geometry("900x600")
         
+        # Основной фрейм
         main_frame = tk.Frame(self.root)
         main_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
+        # Левая часть - чат
         left_frame = tk.Frame(main_frame)
         left_frame.pack(side='left', fill='both', expand=True)
         
-        self.current_chat = "Общий чат"
-        
-        chats_frame = tk.LabelFrame(left_frame, text="💬 Чаты")
-        chats_frame.pack(fill='x', pady=(0, 5))
-        
-        general_btn = tk.Button(chats_frame, text="🌐 Общий", 
-                               command=lambda: self.switch_chat("Общий чат"))
-        general_btn.pack(side='left', padx=2)
-        
-        work_btn = tk.Button(chats_frame, text="💼 Работа", 
-                            command=lambda: self.switch_chat("Работа"))
-        work_btn.pack(side='left', padx=2)
-        
-        other_btn = tk.Button(chats_frame, text="📁 Разное", 
-                             command=lambda: self.switch_chat("Разное"))
-        other_btn.pack(side='left', padx=2)
-        
-        chat_frame = tk.LabelFrame(left_frame, text="📨 Сообщения")
+        # Область чата
+        chat_frame = tk.LabelFrame(left_frame, text="Чат")
         chat_frame.pack(fill='both', expand=True)
         
         self.chat_text = scrolledtext.ScrolledText(
-            chat_frame, 
-            wrap=tk.WORD, 
-            width=50, 
-            height=20,
-            state='disabled'
+            chat_frame,
+            wrap=tk.WORD,
+            state='disabled',
+            height=20
         )
         self.chat_text.pack(fill='both', expand=True, padx=5, pady=5)
         
+        # Ввод сообщения
         input_frame = tk.Frame(left_frame)
         input_frame.pack(fill='x', pady=5)
         
+        tk.Label(input_frame, text="Сообщение для всех:").pack(anchor='w')
         self.message_entry = tk.Entry(input_frame, width=50)
-        self.message_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        self.message_entry.bind('<Return>', lambda e: self.send_message())
+        self.message_entry.pack(fill='x', pady=2)
+        self.message_entry.bind('<Return>', self.send_message)
         
-        send_button = tk.Button(input_frame, text="📤 Отправить", command=self.send_message)
-        send_button.pack(side='right')
+        send_btn = tk.Button(input_frame, text="Отправить всем", command=self.send_message)
+        send_btn.pack(pady=2)
         
+        # Правая часть - управление
         right_frame = tk.Frame(main_frame)
         right_frame.pack(side='right', fill='y', padx=(10, 0))
         
         # Ручное подключение
-        manual_frame = tk.LabelFrame(right_frame, text="🔧 Ручное подключение")
+        manual_frame = tk.LabelFrame(right_frame, text="Ручное подключение")
         manual_frame.pack(fill='x', pady=(0, 10))
         
-        self.manual_ip_entry = tk.Entry(manual_frame, width=15)
-        self.manual_ip_entry.pack(padx=5, pady=5)
-        self.manual_ip_entry.insert(0, "192.168.0.")
+        tk.Label(manual_frame, text="IP адрес:").pack(anchor='w')
+        self.manual_ip_entry = tk.Entry(manual_frame)
+        self.manual_ip_entry.pack(fill='x', pady=2)
         
         manual_btn = tk.Button(manual_frame, text="Подключиться", command=self.manual_connect)
-        manual_btn.pack(padx=5, pady=5)
+        manual_btn.pack(fill='x', pady=2)
         
-        users_frame = tk.LabelFrame(right_frame, text="👥 Пользователи онлайн")
+        # Список пользователей
+        users_frame = tk.LabelFrame(right_frame, text="Пользователи онлайн")
         users_frame.pack(fill='x', pady=(0, 10))
         
-        self.users_listbox = tk.Listbox(users_frame, height=8, width=20)
-        self.users_listbox.pack(fill='both', padx=5, pady=5)
+        self.users_listbox = tk.Listbox(users_frame, height=10)
+        self.users_listbox.pack(fill='both', expand=True, padx=5, pady=5)
         
-        user_buttons_frame = tk.Frame(users_frame)
-        user_buttons_frame.pack(fill='x', pady=5)
+        # Личные сообщения
+        private_frame = tk.LabelFrame(right_frame, text="Личное сообщение")
+        private_frame.pack(fill='x')
         
-        private_chat_btn = tk.Button(
-            user_buttons_frame, 
-            text="💬 Личный чат", 
-            command=self.start_private_chat
-        )
-        private_chat_btn.pack(fill='x', pady=2)
+        tk.Label(private_frame, text="Сообщение:").pack(anchor='w')
+        self.private_entry = tk.Entry(private_frame)
+        self.private_entry.pack(fill='x', pady=2)
         
-        add_to_group_btn = tk.Button(
-            user_buttons_frame, 
-            text="➕ В группу", 
-            command=self.add_to_group
-        )
-        add_to_group_btn.pack(fill='x', pady=2)
+        private_btn = tk.Button(private_frame, text="Отправить выбранному", command=self.send_private_message)
+        private_btn.pack(fill='x', pady=2)
         
-        refresh_btn = tk.Button(
-            user_buttons_frame, 
-            text="🔄 Обновить", 
-            command=self.force_discovery
-        )
+        # Кнопки управления
+        control_frame = tk.Frame(right_frame)
+        control_frame.pack(fill='x', pady=10)
+        
+        refresh_btn = tk.Button(control_frame, text="Обновить список", command=self.force_refresh)
         refresh_btn.pack(fill='x', pady=2)
         
-        self.private_chats_frame = tk.LabelFrame(right_frame, text="🔒 Личные чаты")
-        self.private_chats_frame.pack(fill='x')
+        clear_btn = tk.Button(control_frame, text="Очистить чат", command=self.clear_chat)
+        clear_btn.pack(fill='x', pady=2)
         
-        self.private_chats_listbox = tk.Listbox(self.private_chats_frame, height=6, width=20)
-        self.private_chats_listbox.pack(fill='both', padx=5, pady=5)
-        self.private_chats_listbox.bind('<Double-Button-1>', lambda e: self.open_private_chat())
-        
-        private_buttons_frame = tk.Frame(self.private_chats_frame)
-        private_buttons_frame.pack(fill='x', pady=5)
-        
-        open_private_btn = tk.Button(
-            private_buttons_frame, 
-            text="🔓 Открыть", 
-            command=self.open_private_chat
-        )
-        open_private_btn.pack(fill='x', pady=2)
-        
-        remove_private_btn = tk.Button(
-            private_buttons_frame, 
-            text="🗑️ Удалить", 
-            command=self.remove_private_chat
-        )
-        remove_private_btn.pack(fill='x', pady=2)
-        
+        # Запускаем обновление интерфейса
         self.root.after(1000, self.update_interface)
     
-    def force_discovery(self):
-        """Принудительный поиск пользователей"""
-        self.add_message("🔄 Принудительный поиск пользователей...", "system")
-        message = f"DISCOVERY:{self.host}"
+    def force_refresh(self):
+        """Принудительное обновление списка пользователей"""
+        self.add_message("🔄 Принудительный поиск...", "system")
         # Отправляем broadcast
         try:
-            temp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            temp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            temp_socket.sendto(message.encode('utf-8'), ("255.255.255.255", 12346))
-            temp_socket.close()
+            message = f"HELLO:{self.host}"
+            self.udp_socket.sendto(message.encode('utf-8'), ('<broadcast>', self.port))
         except:
             pass
     
-    def switch_chat(self, chat_name):
-        self.current_chat = chat_name
-        self.root.title(f"📱 Мессенджер - {self.host} - {chat_name}")
-    
-    def start_private_chat(self):
-        selection = self.users_listbox.curselection()
-        if selection:
-            user_ip = self.users_listbox.get(selection[0])
-            chat_name = f"Лично:{user_ip}"
-            
-            if user_ip not in self.private_chats_listbox.get(0, tk.END):
-                self.private_chats_listbox.insert(tk.END, user_ip)
-            
-            self.switch_chat(chat_name)
-            self.add_message(f"💬 Чат с {user_ip}", "system")
-    
-    def open_private_chat(self):
-        selection = self.private_chats_listbox.curselection()
-        if selection:
-            user_ip = self.private_chats_listbox.get(selection[0])
-            self.switch_chat(f"Лично:{user_ip}")
-    
-    def remove_private_chat(self):
-        selection = self.private_chats_listbox.curselection()
-        if selection:
-            self.private_chats_listbox.delete(selection[0])
-    
-    def add_to_group(self):
-        selection = self.users_listbox.curselection()
-        if selection:
-            user_ip = self.users_listbox.get(selection[0])
-            
-            group_window = tk.Toplevel(self.root)
-            group_window.title("Выберите группу")
-            group_window.geometry("250x180")
-            
-            tk.Label(group_window, text="Выберите группу:").pack(pady=10)
-            
-            group_var = tk.StringVar(value=list(self.groups.keys())[0])
-            
-            group_frame = tk.Frame(group_window)
-            group_frame.pack(pady=5)
-            
-            for group in self.groups.keys():
-                tk.Radiobutton(group_frame, text=group, variable=group_var, value=group).pack(anchor='w')
-            
-            def confirm_add():
-                group = group_var.get()
-                self.groups[group].add(user_ip)
-                self.add_message(f"✅ {user_ip} добавлен в '{group}'", "system")
-                group_window.destroy()
-            
-            tk.Button(group_window, text="Добавить", command=confirm_add).pack(pady=5)
+    def clear_chat(self):
+        """Очистка чата"""
+        self.chat_text.config(state='normal')
+        self.chat_text.delete(1.0, tk.END)
+        self.chat_text.config(state='disabled')
     
     def add_message(self, message, msg_type="normal"):
+        """Добавление сообщения в чат"""
         self.chat_text.config(state='normal')
         
         colors = {
             "system": "blue",
-            "error": "red", 
-            "private": "purple",
+            "error": "red",
+            "private": "purple", 
             "my_private": "dark violet",
-            "group": "green",
-            "my_group": "dark green",
-            "my_normal": "black",
-            "normal": "gray"
+            "my_message": "green",
+            "normal": "black"
         }
         
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {message}\n"
         
-        if self.current_chat.startswith("Лично:"):
-            prefix = "[🔒] "
-        elif self.current_chat in self.groups:
-            prefix = f"[👥{self.current_chat}] "
-        else:
-            prefix = "[🌐] "
-        
-        formatted_message = f"{prefix}[{timestamp}] {message}\n"
-        
+        # Добавляем сообщение
         self.chat_text.insert(tk.END, formatted_message)
         
+        # Применяем цвет
         if msg_type in colors:
             start_index = f"{self.chat_text.index(tk.END)} - {len(formatted_message) + 1}c"
             end_index = self.chat_text.index(tk.END)
@@ -426,43 +315,31 @@ class LocalMessenger:
         self.chat_text.config(state='disabled')
         self.chat_text.see(tk.END)
     
-    def get_current_tab(self):
-        return self.current_chat
-    
     def update_users_list(self):
+        """Обновление списка пользователей"""
         self.users_listbox.delete(0, tk.END)
-        for user_ip in self.clients.keys():
+        for user_ip in sorted(self.clients.keys()):
             self.users_listbox.insert(tk.END, user_ip)
     
     def update_interface(self):
+        """Периодическое обновление интерфейса"""
         self.update_users_list()
-        self.root.after(1000, self.update_interface)
+        self.root.after(2000, self.update_interface)
+    
+    def on_closing(self):
+        """Действия при закрытии"""
+        self.running = False
+        try:
+            self.udp_socket.close()
+        except:
+            pass
+        self.root.destroy()
     
     def run(self):
+        """Запуск приложения"""
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.mainloop()
 
 if __name__ == "__main__":
-    def start_discovery_server():
-        discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        discovery_socket.bind(('0.0.0.0', 12346))
-        
-        while True:
-            try:
-                data, addr = discovery_socket.recvfrom(1024)
-                message = data.decode('utf-8')
-                if message.startswith("DISCOVERY:"):
-                    # Отвечаем тому, кто нас нашел
-                    user_ip = message.split(":")[1]
-                    response = f"DISCOVERY:{messenger.host}"
-                    discovery_socket.sendto(response.encode('utf-8'), (user_ip, 12346))
-            except:
-                pass
-    
-    messenger = LocalMessenger()
-    
-    discovery_thread = threading.Thread(target=start_discovery_server)
-    discovery_thread.daemon = True
-    discovery_thread.start()
-    
-    messenger.run()
+    app = SimpleMessenger()
+    app.run()
