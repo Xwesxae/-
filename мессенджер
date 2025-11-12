@@ -1,9 +1,12 @@
 import socket
 import threading
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, ttk
 import datetime
 import time
+from googletrans import Translator
+import requests
+import json
 
 class SimpleMessenger:
     def __init__(self):
@@ -11,6 +14,7 @@ class SimpleMessenger:
         self.port = 8888
         self.clients = {}
         self.running = True
+        self.translator = Translator()
         
         print(f"Ваш IP: {self.host}")
         
@@ -31,9 +35,25 @@ class SimpleMessenger:
             except:
                 return "127.0.0.1"
     
+    def translate_text(self, text, dest_lang='en'):
+        """Перевод текста"""
+        try:
+            translated = self.translator.translate(text, dest=dest_lang)
+            return translated.text
+        except:
+            try:
+                # Резервный метод перевода
+                return self.backup_translate(text, dest_lang)
+            except:
+                return f"[Ошибка перевода] {text}"
+    
+    def backup_translate(self, text, dest_lang='en'):
+        """Резервный метод перевода через API"""
+        # Этот метод можно расширить при необходимости
+        return f"[Перевод недоступен] {text}"
+    
     def start_network(self):
         """Запускаем сетевые компоненты"""
-        # UDP сервер для приема сообщений
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -45,7 +65,6 @@ class SimpleMessenger:
             self.add_message(f"❌ Ошибка: {e}", "error")
             return
         
-        # Запускаем потоки
         threading.Thread(target=self.receive_messages, daemon=True).start()
         threading.Thread(target=self.broadcast_presence, daemon=True).start()
         threading.Thread(target=self.scan_network, daemon=True).start()
@@ -56,7 +75,7 @@ class SimpleMessenger:
             try:
                 message = f"HELLO:{self.host}"
                 self.udp_socket.sendto(message.encode('utf-8'), ('<broadcast>', self.port))
-                time.sleep(3)  # Отправляем каждые 3 секунды
+                time.sleep(3)
             except Exception as e:
                 time.sleep(5)
     
@@ -66,7 +85,6 @@ class SimpleMessenger:
         
         while self.running:
             try:
-                # Сканируем диапазон 1-254
                 for i in range(1, 255):
                     if not self.running:
                         break
@@ -77,7 +95,7 @@ class SimpleMessenger:
                             self.udp_socket.sendto(message.encode('utf-8'), (target_ip, self.port))
                         except:
                             pass
-                time.sleep(10)  # Сканируем каждые 10 секунд
+                time.sleep(10)
             except:
                 time.sleep(10)
     
@@ -99,37 +117,51 @@ class SimpleMessenger:
                 self.clients[user_ip] = ip
                 self.update_users_list()
                 self.add_message(f"✅ Обнаружен: {user_ip}", "system")
-                # Отвечаем на приветствие
                 response = f"HELLO:{self.host}"
                 self.udp_socket.sendto(response.encode('utf-8'), (ip, self.port))
         
         elif message.startswith("PING:"):
             user_ip = message.split(":")[1]
             if user_ip != self.host:
-                # Отвечаем на ping
                 response = f"HELLO:{self.host}"
                 self.udp_socket.sendto(response.encode('utf-8'), (ip, self.port))
         
         elif message.startswith("MSG:"):
-            # Обычное сообщение
             parts = message.split(":", 2)
             if len(parts) == 3:
                 sender, content = parts[1], parts[2]
-                self.add_message(f"[{sender}] {content}", "normal")
+                display_msg = f"[{sender}] {content}"
+                self.add_message(display_msg, "normal")
+                
+                # Автоматический перевод если включен
+                if self.auto_translate_var.get():
+                    translated = self.translate_text(content, self.target_lang.get())
+                    self.add_message(f"   → {translated}", "translated")
         
         elif message.startswith("PRIVATE:"):
-            # Личное сообщение
             parts = message.split(":", 3)
             if len(parts) == 4:
                 sender, target, content = parts[1], parts[2], parts[3]
                 if target == self.host:
-                    self.add_message(f"[Лично от {sender}] {content}", "private")
+                    display_msg = f"[Лично от {sender}] {content}"
+                    self.add_message(display_msg, "private")
+                    
+                    if self.auto_translate_var.get():
+                        translated = self.translate_text(content, self.target_lang.get())
+                        self.add_message(f"   → {translated}", "translated")
     
     def send_message(self, event=None):
         """Отправка сообщения"""
         message = self.message_entry.get().strip()
         if not message:
             return
+        
+        # Переводчик для исходящих сообщений
+        if self.translate_outgoing_var.get():
+            translated_msg = self.translate_text(message, self.target_lang.get())
+            display_msg = f"[Я] {message} → {translated_msg}"
+        else:
+            display_msg = f"[Я] {message}"
         
         # Отправляем всем пользователям
         for user_ip in self.clients:
@@ -139,8 +171,26 @@ class SimpleMessenger:
             except:
                 pass
         
-        self.add_message(f"[Я] {message}", "my_message")
+        self.add_message(display_msg, "my_message")
         self.message_entry.delete(0, tk.END)
+    
+    def translate_selected_text(self):
+        """Перевод выделенного текста в чате"""
+        try:
+            selected_text = self.chat_text.get(tk.SEL_FIRST, tk.SEL_LAST)
+            if selected_text.strip():
+                translated = self.translate_text(selected_text, self.target_lang.get())
+                self.add_message(f"📖 Перевод: {selected_text} → {translated}", "system")
+        except:
+            messagebox.showinfo("Перевод", "Выделите текст в чате для перевода")
+    
+    def quick_translate(self):
+        """Быстрый перевод текста из специального поля"""
+        text = self.quick_translate_entry.get().strip()
+        if text:
+            translated = self.translate_text(text, self.target_lang.get())
+            self.add_message(f"🔤 {text} → {translated}", "system")
+            self.quick_translate_entry.delete(0, tk.END)
     
     def send_private_message(self):
         """Отправка личного сообщения"""
@@ -157,7 +207,14 @@ class SimpleMessenger:
         try:
             msg = f"PRIVATE:{self.host}:{target_ip}:{message}"
             self.udp_socket.sendto(msg.encode('utf-8'), (target_ip, self.port))
-            self.add_message(f"[Я → {target_ip}] {message}", "my_private")
+            
+            if self.translate_outgoing_var.get():
+                translated = self.translate_text(message, self.target_lang.get())
+                display_msg = f"[Я → {target_ip}] {message} → {translated}"
+            else:
+                display_msg = f"[Я → {target_ip}] {message}"
+                
+            self.add_message(display_msg, "my_private")
             self.private_entry.delete(0, tk.END)
         except Exception as e:
             self.add_message(f"❌ Ошибка отправки: {e}", "error")
@@ -177,7 +234,6 @@ class SimpleMessenger:
             self.update_users_list()
             self.add_message(f"✅ Ручное подключение: {ip}", "system")
             
-            # Отправляем приветствие
             try:
                 message = f"HELLO:{self.host}"
                 self.udp_socket.sendto(message.encode('utf-8'), (ip, self.port))
@@ -189,8 +245,8 @@ class SimpleMessenger:
     def setup_gui(self):
         """Настройка интерфейса"""
         self.root = tk.Tk()
-        self.root.title(f"Простой мессенджер - {self.host}")
-        self.root.geometry("900x600")
+        self.root.title(f"Мессенджер с переводом - {self.host}")
+        self.root.geometry("1000x700")
         
         # Основной фрейм
         main_frame = tk.Frame(self.root)
@@ -200,17 +256,59 @@ class SimpleMessenger:
         left_frame = tk.Frame(main_frame)
         left_frame.pack(side='left', fill='both', expand=True)
         
+        # Настройки перевода
+        translate_frame = tk.LabelFrame(left_frame, text="⚙️ Настройки перевода")
+        translate_frame.pack(fill='x', pady=(0, 5))
+        
+        # Язык перевода
+        lang_frame = tk.Frame(translate_frame)
+        lang_frame.pack(fill='x', pady=2)
+        
+        tk.Label(lang_frame, text="Язык перевода:").pack(side='left')
+        self.target_lang = tk.StringVar(value='en')
+        lang_combo = ttk.Combobox(lang_frame, textvariable=self.target_lang, 
+                                 values=['en', 'ru', 'es', 'fr', 'de', 'zh', 'ja', 'ko'], width=8)
+        lang_combo.pack(side='left', padx=5)
+        
+        # Автоперевод
+        self.auto_translate_var = tk.BooleanVar(value=False)
+        auto_translate_cb = tk.Checkbutton(translate_frame, text="Автоперевод входящих", 
+                                          variable=self.auto_translate_var)
+        auto_translate_cb.pack(anchor='w')
+        
+        self.translate_outgoing_var = tk.BooleanVar(value=False)
+        outgoing_cb = tk.Checkbutton(translate_frame, text="Перевод исходящих", 
+                                    variable=self.translate_outgoing_var)
+        outgoing_cb.pack(anchor='w')
+        
+        # Быстрый перевод
+        quick_translate_frame = tk.Frame(translate_frame)
+        quick_translate_frame.pack(fill='x', pady=2)
+        
+        tk.Label(quick_translate_frame, text="Быстрый перевод:").pack(side='left')
+        self.quick_translate_entry = tk.Entry(quick_translate_frame, width=30)
+        self.quick_translate_entry.pack(side='left', padx=5)
+        self.quick_translate_entry.bind('<Return>', lambda e: self.quick_translate())
+        
+        quick_btn = tk.Button(quick_translate_frame, text="Перевести", command=self.quick_translate)
+        quick_btn.pack(side='left')
+        
         # Область чата
-        chat_frame = tk.LabelFrame(left_frame, text="Чат")
+        chat_frame = tk.LabelFrame(left_frame, text="💬 Чат")
         chat_frame.pack(fill='both', expand=True)
         
         self.chat_text = scrolledtext.ScrolledText(
             chat_frame,
             wrap=tk.WORD,
             state='disabled',
-            height=20
+            height=15
         )
         self.chat_text.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Контекстное меню для перевода
+        self.context_menu = tk.Menu(self.chat_text, tearoff=0)
+        self.context_menu.add_command(label="Перевести выделенный текст", command=self.translate_selected_text)
+        self.chat_text.bind("<Button-3>", self.show_context_menu)
         
         # Ввод сообщения
         input_frame = tk.Frame(left_frame)
@@ -229,7 +327,7 @@ class SimpleMessenger:
         right_frame.pack(side='right', fill='y', padx=(10, 0))
         
         # Ручное подключение
-        manual_frame = tk.LabelFrame(right_frame, text="Ручное подключение")
+        manual_frame = tk.LabelFrame(right_frame, text="🔌 Ручное подключение")
         manual_frame.pack(fill='x', pady=(0, 10))
         
         tk.Label(manual_frame, text="IP адрес:").pack(anchor='w')
@@ -240,14 +338,14 @@ class SimpleMessenger:
         manual_btn.pack(fill='x', pady=2)
         
         # Список пользователей
-        users_frame = tk.LabelFrame(right_frame, text="Пользователи онлайн")
+        users_frame = tk.LabelFrame(right_frame, text="👥 Пользователи онлайн")
         users_frame.pack(fill='x', pady=(0, 10))
         
-        self.users_listbox = tk.Listbox(users_frame, height=10)
+        self.users_listbox = tk.Listbox(users_frame, height=8)
         self.users_listbox.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Личные сообщения
-        private_frame = tk.LabelFrame(right_frame, text="Личное сообщение")
+        private_frame = tk.LabelFrame(right_frame, text="🔒 Личное сообщение")
         private_frame.pack(fill='x')
         
         tk.Label(private_frame, text="Сообщение:").pack(anchor='w')
@@ -261,19 +359,27 @@ class SimpleMessenger:
         control_frame = tk.Frame(right_frame)
         control_frame.pack(fill='x', pady=10)
         
-        refresh_btn = tk.Button(control_frame, text="Обновить список", command=self.force_refresh)
+        refresh_btn = tk.Button(control_frame, text="🔄 Обновить список", command=self.force_refresh)
         refresh_btn.pack(fill='x', pady=2)
         
-        clear_btn = tk.Button(control_frame, text="Очистить чат", command=self.clear_chat)
+        translate_btn = tk.Button(control_frame, text="📖 Перевести выделенное", command=self.translate_selected_text)
+        translate_btn.pack(fill='x', pady=2)
+        
+        clear_btn = tk.Button(control_frame, text="🧹 Очистить чат", command=self.clear_chat)
         clear_btn.pack(fill='x', pady=2)
         
-        # Запускаем обновление интерфейса
         self.root.after(1000, self.update_interface)
+    
+    def show_context_menu(self, event):
+        """Показ контекстного меню"""
+        try:
+            self.context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.context_menu.grab_release()
     
     def force_refresh(self):
         """Принудительное обновление списка пользователей"""
         self.add_message("🔄 Принудительный поиск...", "system")
-        # Отправляем broadcast
         try:
             message = f"HELLO:{self.host}"
             self.udp_socket.sendto(message.encode('utf-8'), ('<broadcast>', self.port))
@@ -296,16 +402,15 @@ class SimpleMessenger:
             "private": "purple", 
             "my_private": "dark violet",
             "my_message": "green",
+            "translated": "dark green",
             "normal": "black"
         }
         
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {message}\n"
         
-        # Добавляем сообщение
         self.chat_text.insert(tk.END, formatted_message)
         
-        # Применяем цвет
         if msg_type in colors:
             start_index = f"{self.chat_text.index(tk.END)} - {len(formatted_message) + 1}c"
             end_index = self.chat_text.index(tk.END)
